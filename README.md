@@ -1,6 +1,6 @@
 # BBCom
 
-**Blue Band Communicator** - A modern, cross-platform serial communication tool built with Tauri and React.
+A modern, cross-platform serial communication tool built with Tauri and React.
 
 ![Version](https://img.shields.io/badge/version-0.7.0-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
@@ -43,22 +43,6 @@
 ### Microsoft Store
 Download BBCom from the Microsoft Store (coming soon).
 
-### From Source
-```bash
-# Clone the repository
-git clone https://github.com/BBComTeam/BBCom.git
-cd BBCom/bbcom
-
-# Install dependencies
-npm install
-
-# Run in development mode
-npm run tauri dev
-
-# Build for production
-npm run tauri build
-```
-
 ## Configuration
 
 BBCom stores user configurations in JSONC format, including:
@@ -97,16 +81,6 @@ Configuration files can be saved, loaded, and shared between sessions.
 
 ### Build Targets
 - Windows: MSIX, NSIS installer
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
 
 ## License
 
