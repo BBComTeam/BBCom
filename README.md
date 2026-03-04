@@ -70,7 +70,7 @@ Configuration files can be saved, loaded, and shared between sessions.
 - **UI Components**: Custom components with Lucide icons
 - **Styling**: CSS with CSS Variables for theming
 - **Internationalization**: i18next
-- *** PURE Vibe-coded *** 
+- <span style="color: white; background-color: red; font-weight: bold;">PURELY Vibe-coded</span>
 
 ## Development
 
