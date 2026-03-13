@@ -42,7 +42,7 @@ A modern, cross-platform serial communication tool built with Tauri and React.
 ## Installation
 
 ### Microsoft Store
-Download BBCom from the Microsoft Store (coming soon).
+Download BBCom from the Microsoft Store: https://apps.microsoft.com/detail/9ND3D780WC1W?hl=en-us&gl=CN&ocid=pdpshare.
 
 ## Configuration
 
@@ -61,6 +61,8 @@ Configuration files can be saved, loaded, and shared between sessions.
 |----------|--------|
 | `Enter`  | Send data from input field |
 | `Ctrl+L` | Toggle autoscroll |
+| `Ctrl+G` | Toggle Connect / Disconnect |
+| `Ctrl+P` | Toggle Pin (always on top) |
 | `Ctrl+Wheel` | Adjust font size |
 
 ## Technology Stack
