@@ -42,7 +42,8 @@ A modern, cross-platform serial communication tool built with Tauri and React.
 ## Screenshots
 
 <img width="624" height="384" alt="bbcom_interface" src="https://github.com/user-attachments/assets/31821e20-250a-4f6a-bf51-03e468dfa3cb" />
-
+<img width="1867" height="1138" alt="light_screenshot" src="https://github.com/user-attachments/assets/e6424784-a99a-4fb4-a03f-948d73d0b8cd" />
+<img width="1561" height="1261" alt="waveform" src="https://github.com/user-attachments/assets/626c1ddc-19e4-4463-b8bb-94409dd71714" />
 
 ## Installation
 
