@@ -2,7 +2,7 @@
 
 A modern, cross-platform serial communication tool built with Tauri and React.
 
-![Version](https://img.shields.io/badge/version-1.1.3-blue)
+![Version](https://img.shields.io/badge/version-1.1.7-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Platform](https://img.shields.io/badge/platform-Windows-lightgrey)
 
@@ -34,6 +34,12 @@ A modern, cross-platform serial communication tool built with Tauri and React.
 - **Responsive Layout** - Resizable panels with drag handles
 - **Configurable Fonts** - Customizable font family and size for log display
 
+### Plus Features
+- **More Highlight Actions** - Pause autoscroll when highlight hit, Bold.
+- **Replay** - Load an existing log file and apply highlight and generate waveform view with BBCom.
+- **Waveform** - values matches format "<var_name>=<var_value>;" can be displayed in waveform tab.
+- **Terminal mode** - use BBCom as TCP/UDP terminal
+  
 ## Screenshots
 
 <img width="624" height="384" alt="bbcom_interface" src="https://github.com/user-attachments/assets/31821e20-250a-4f6a-bf51-03e468dfa3cb" />
