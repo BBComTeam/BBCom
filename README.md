@@ -3,7 +3,6 @@
 A modern, cross-platform serial communication tool built with Tauri and React.
 
 ![Version](https://img.shields.io/badge/version-1.1.7-blue)
-![License](https://img.shields.io/badge/license-MIT-green)
 ![Platform](https://img.shields.io/badge/platform-Windows-lightgrey)
 
 ## Features
@@ -90,9 +89,6 @@ Configuration files can be saved, loaded, and shared between sessions.
 ### Build Targets
 - Windows: MSIX, NSIS installer
 
-## License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 ## Acknowledgments
 
