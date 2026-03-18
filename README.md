@@ -40,10 +40,9 @@ A modern, cross-platform serial communication tool built with Tauri and React.
 - **Terminal mode** - use BBCom as TCP/UDP terminal
   
 ## Screenshots
-
-<img width="1867" height="1138" alt="dark_screenshot" src="https://github.com/user-attachments/assets/5da448d2-8ca4-43e5-8237-beb356fe081b" />
-<img width="1867" height="1138" alt="light_screenshot" src="https://github.com/user-attachments/assets/e6424784-a99a-4fb4-a03f-948d73d0b8cd" />
-<img width="1561" height="1261" alt="waveform" src="https://github.com/user-attachments/assets/626c1ddc-19e4-4463-b8bb-94409dd71714" />
+<img width="2240" height="1340" alt="ms_store_dark_english" src="https://github.com/user-attachments/assets/c9821466-cb14-4aa1-af74-8cb402d007f8" />
+<img width="2240" height="1340" alt="ms_store_light_english" src="https://github.com/user-attachments/assets/763821f2-8a4e-4851-8f03-4218901613f3" />
+<img width="2240" height="1340" alt="waveform" src="https://github.com/user-attachments/assets/626c1ddc-19e4-4463-b8bb-94409dd71714" />
 
 ## Installation
 
