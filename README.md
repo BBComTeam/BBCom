@@ -2,7 +2,7 @@
 
 A modern, cross-platform serial communication tool built with Tauri and React.
 
-![Version](https://img.shields.io/badge/version-1.1.7-blue)
+![Version](https://img.shields.io/badge/version-1.2.3-blue)
 ![Platform](https://img.shields.io/badge/platform-Windows-lightgrey)
 
 ## Features
@@ -16,7 +16,7 @@ A modern, cross-platform serial communication tool built with Tauri and React.
 ### Log Management
 - **Dual Display Modes** - ASCII and HEX formats
 - **Timestamp & Direction Tags** - Optional [TX]/[RX] and timestamp prefixes
-- **Syntax Highlighting** - Custom regex-based highlight rules (up to 10 rules)
+- **Syntax Highlighting** - Custom regex-based highlight rules (up to 10 rules) and match counts.
 - **Buffer Management** - Configurable log buffer (1,000 - 20,000 lines (can be up to 5,000,000))
 - **Log Export** - Save logs to file for later analysis
 
@@ -32,6 +32,7 @@ A modern, cross-platform serial communication tool built with Tauri and React.
 - **Multi-language** - English and Simplified Chinese (extensible)
 - **Responsive Layout** - Resizable panels with drag handles
 - **Configurable Fonts** - Customizable font family and size for log display
+- **Smart Tools** - Always on top, always awake tools
 
 ### Plus Features
 - **More Highlight Actions** - Pause autoscroll when highlight hit, Bold.
@@ -68,6 +69,7 @@ Configuration files can be saved, loaded, and shared between sessions.
 | `Ctrl+L` | Toggle autoscroll |
 | `Ctrl+G` | Toggle Connect / Disconnect |
 | `Ctrl+P` | Toggle Pin (always on top) |
+| `Ctrl+O` | Toggle keep system awake |
 | `Ctrl+Wheel` | Adjust font size |
 
 ## Technology Stack
