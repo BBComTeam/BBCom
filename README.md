@@ -2,7 +2,7 @@
 
 A modern, cross-platform serial communication tool built with Tauri and React.
 
-![Version](https://img.shields.io/badge/version-1.3.0-blue)
+![Version](https://img.shields.io/badge/version-1.3.3-blue)
 ![Platform](https://img.shields.io/badge/platform-Windows-green)
 
 ## Features
