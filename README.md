@@ -2,7 +2,7 @@
 
 A modern, cross-platform serial communication tool built with Tauri and React.
 
-![Version](https://img.shields.io/badge/version-1.3.9-blue)
+![Version](https://img.shields.io/badge/version-1.4.1-blue)
 ![Platform](https://img.shields.io/badge/platform-Windows-green)
 
 ## Features
@@ -12,11 +12,13 @@ A modern, cross-platform serial communication tool built with Tauri and React.
 - **Configurable Serial Parameters** - Data bits, parity, stop bits, and flow control
 - **Hardware Flow Control** - CTS, RTS, DTR pin configuration
 - **Real-time RX/TX Monitoring** - Live data display with byte counters
+- **RTT Log Support** - RTT Channel TX/RX support, serial and RTT in one tool!
 
 ### Log Management
 - **Dual Display Modes** - ASCII and HEX formats
 - **Timestamp & Direction Tags** - Optional [TX]/[RX] and timestamp prefixes
 - **Syntax Highlighting** - Custom regex-based highlight rules (up to 10 rules) and match counts.
+- **ANSI Support** - Support ANSI syntax for string formatting. 
 - **Buffer Management** - Configurable log buffer (1,000 - 20,000 lines (can be up to 5,000,000))
 - **Log Export** - Save logs to file for later analysis
 
