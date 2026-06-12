@@ -126,7 +126,7 @@ LLM: I see the device is sending "Hello". Let me send a response...
 
 ```
 ┌─────────────┐     ┌──────────────┐     ┌──────────────┐
-│   LLM/Claude │────→│  MCP Server  │────→│  BBCom CLI   │
+│  LLM/Claude │────→│  MCP Server  │────→│  BBCom CLI   │
 │             │     │  (Python)    │     │  (--test)    │
 └─────────────┘     └──────┬───────┘     └──────────────┘
                            │                     │
