@@ -6,7 +6,8 @@ Provides LLMs with the ability to:
 - Query BBCom mirror status and serial configuration
 - Read real-time serial data via mirror TCP connection
 - Send commands to serial devices via mirror TCP connection
-- Control serial port connection (connect/disconnect)
+- Send commands AND capture responses atomically (avoids missing responses)
+- Control serial port settings
 
 Usage:
   python bbcom_mcp_server.py
@@ -32,6 +33,7 @@ import os
 import socket
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -198,6 +200,83 @@ def _mirror_tcp_send(host: str, port: int, data: str) -> dict:
         return {"type": "error", "message": f"Mirror send failed: {e}"}
 
 
+def _mirror_tcp_send_and_read(
+    host: str, port: int, data: str, read_duration_ms: int = 5000
+) -> dict:
+    """Connect to mirror, start reading, then send command and capture response.
+
+    This uses two TCP connections:
+    1. A reader connection is established FIRST to capture all incoming data
+    2. A sender connection sends the command
+    3. The reader continues collecting data for read_duration_ms after sending
+
+    This ensures no response data is missed due to latency between
+    separate send and read tool calls.
+    """
+    reader_lines = []
+    reader_bytes = 0
+    reader_error = None
+    reader_ready = threading.Event()
+
+    def _reader():
+        nonlocal reader_lines, reader_bytes, reader_error
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(5.0)
+            sock.connect((host, port))
+            sock.settimeout(0.5)
+            reader_ready.set()  # Signal that reader is connected
+
+            start = time.time()
+            while (time.time() - start) * 1000 < read_duration_ms:
+                try:
+                    recv_data = sock.recv(4096)
+                    if not recv_data:
+                        break
+                    reader_bytes += len(recv_data)
+                    text = recv_data.decode("utf-8", errors="replace")
+                    for line in text.split("\n"):
+                        line = line.strip()
+                        if line:
+                            reader_lines.append(line)
+                except socket.timeout:
+                    continue
+                except Exception:
+                    break
+
+            sock.close()
+        except Exception as e:
+            reader_error = str(e)
+            reader_ready.set()
+
+    # Start reader thread
+    reader_thread = threading.Thread(target=_reader, daemon=True)
+    reader_thread.start()
+
+    # Wait for reader to be connected (max 5s)
+    if not reader_ready.wait(timeout=5.0):
+        return {"type": "error", "message": "Reader connection timed out"}
+
+    if reader_error:
+        return {"type": "error", "message": f"Reader connection failed: {reader_error}"}
+
+    # Now send the command via a separate connection
+    send_result = _mirror_tcp_send(host, port, data)
+    if send_result.get("type") == "error":
+        # Wait for reader to finish even if send failed
+        reader_thread.join(timeout=read_duration_ms / 1000 + 1)
+        return send_result
+
+    # Wait for reader to finish collecting responses
+    reader_thread.join(timeout=read_duration_ms / 1000 + 1)
+
+    return {
+        "type": "send_and_read",
+        "sent": {"data": data, "bytes": send_result.get("bytes", 0)},
+        "response": {"lines": reader_lines, "bytes": reader_bytes},
+    }
+
+
 @mcp.tool()
 def bbcom_status() -> str:
     """Get BBCom serial communication tool status. Returns mirror status,
@@ -212,7 +291,7 @@ def bbcom_mirror_status() -> str:
     """Get detailed mirror status from BBCom. Returns whether mirror is enabled,
     the TCP address and port that serial data is being mirrored to, and how
     many clients are connected. If mirror is enabled, use the address and port
-    with bbcom_mirror_read and bbcom_mirror_send."""
+    with bbcom_mirror_read, bbcom_mirror_send, or bbcom_mirror_send_and_read."""
     status = _read_runtime_status()
     mirror_info = {
         "mirrorEnabled": status.get("mirrorEnabled", False),
@@ -243,7 +322,11 @@ def bbcom_mirror_read(port: int, host: str = "127.0.0.1", duration_ms: int = 500
     """Read real-time serial data from BBCom's mirror TCP server. Connects to
     the mirror port and collects data for the specified duration. Returns
     an array of formatted log lines with timestamps, direction markers, and
-    content. This is the primary way for LLMs to access live serial data.
+    content. Use this for passive monitoring of serial data.
+
+    IMPORTANT: If you need to send a command AND capture the response, use
+    bbcom_mirror_send_and_read instead. Using separate send and read calls
+    may miss the response due to timing delays between tool invocations.
 
     Args:
         port: Mirror server port number (e.g. 12345)
@@ -258,7 +341,11 @@ def bbcom_mirror_read(port: int, host: str = "127.0.0.1", duration_ms: int = 500
 def bbcom_mirror_send(port: int, data: str, host: str = "127.0.0.1") -> str:
     """Send data through BBCom's mirror TCP server. The data will be forwarded
     to the serial port as a TX transmission. Use this to send commands to
-    the serial device. The data should be a plain text string.
+    the serial device when you do NOT need to capture the response.
+
+    IMPORTANT: If you need to send a command AND capture the response, use
+    bbcom_mirror_send_and_read instead. Using this tool followed by
+    bbcom_mirror_read may miss the response due to timing delays.
 
     Args:
         port: Mirror server port number (e.g. 12345)
@@ -266,6 +353,37 @@ def bbcom_mirror_send(port: int, data: str, host: str = "127.0.0.1") -> str:
         host: Mirror server host address (default: 127.0.0.1)
     """
     result = _mirror_tcp_send(host, port, data)
+    return json.dumps(result, indent=2)
+
+
+@mcp.tool()
+def bbcom_mirror_send_and_read(
+    port: int,
+    data: str,
+    host: str = "127.0.0.1",
+    read_duration_ms: int = 5000,
+) -> str:
+    """Send a command to the serial device AND capture the response atomically.
+    This is the RECOMMENDED way to send commands when you need to see the
+    device's response, because it starts reading BEFORE sending to ensure no
+    response data is missed.
+
+    How it works:
+    1. Opens a reader connection to the mirror TCP server first
+    2. Sends the command via a separate connection
+    3. Collects response data on the reader connection for read_duration_ms
+    4. Returns both the send confirmation and captured response lines
+
+    This avoids the timing problem where calling bbcom_mirror_send followed
+    by bbcom_mirror_read misses the response due to LLM tool call latency.
+
+    Args:
+        port: Mirror server port number (e.g. 12345)
+        data: Command to send to the serial device
+        host: Mirror server host address (default: 127.0.0.1)
+        read_duration_ms: How long to read response data in milliseconds (default: 5000)
+    """
+    result = _mirror_tcp_send_and_read(host, port, data, read_duration_ms)
     return json.dumps(result, indent=2)
 
 
@@ -309,5 +427,10 @@ def bbcom_set_display_mode(mode: str) -> str:
     return json.dumps(result, indent=2)
 
 
-if __name__ == "__main__":
+def main():
+    """Entry point for the MCP server (used by pyproject.toml script)."""
     mcp.run()
+
+
+if __name__ == "__main__":
+    main()
