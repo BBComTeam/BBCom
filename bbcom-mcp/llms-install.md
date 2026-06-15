@@ -45,6 +45,10 @@ uv --directory . run bbcom-mcp
 | `bbcom_get_config` | 获取当前配置 |
 | `bbcom_set_baud_rate` | 设置波特率 |
 | `bbcom_set_display_mode` | 设置显示模式 (ASCII/HEX) |
+| `bbcom_connect` | 连接串口（通过 Mirror TCP 控制命令） |
+| `bbcom_disconnect` | 断开串口连接 |
+| `bbcom_set_signals` | 设置 RTS/DTR 控制信号 |
+| `bbcom_set_serial_config` | 设置完整串口配置（数据位/校验/停止位/流控） |
 | `bbcom_mirror_status` | 查询镜像模式状态 |
 | `bbcom_mirror_read` | 读取镜像数据 |
 | `bbcom_mirror_send` | 发送数据到串口 |

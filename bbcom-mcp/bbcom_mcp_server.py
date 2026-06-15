@@ -931,6 +931,269 @@ def bbcom_set_display_mode(mode: str) -> str:
     return json.dumps(result, indent=2)
 
 
+def _mirror_tcp_control(host: str, port: int, command: str) -> dict:
+    """Send a control command through Mirror TCP and optionally read response.
+
+    Control commands use the \\x01 prefix to distinguish them from normal data.
+    After sending, waits briefly and reads any response data.
+    """
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(5.0)
+        sock.connect((host, port))
+
+        # Control command format: \x01<COMMAND>:<params>\n
+        control_data = f"\x01{command}\n"
+        sock.sendall(control_data.encode("utf-8"))
+
+        # Wait briefly for command to be processed
+        time.sleep(0.3)
+
+        # Try to read response (best effort)
+        sock.settimeout(0.5)
+        response_lines = []
+        try:
+            while True:
+                data = sock.recv(4096)
+                if not data:
+                    break
+                text = data.decode("utf-8", errors="replace")
+                for line in text.split("\n"):
+                    line = line.strip()
+                    if line:
+                        response_lines.append(line)
+        except socket.timeout:
+            pass
+
+        sock.close()
+
+        return {
+            "type": "mirror_control",
+            "command": command,
+            "success": True,
+            "response": response_lines,
+            "message": f"Control command sent: {command}",
+        }
+
+    except Exception as e:
+        return {"type": "error", "message": f"Mirror control failed: {e}"}
+
+
+def _get_mirror_connection() -> tuple[str, int] | None:
+    """Get Mirror TCP host and port from runtime status.
+
+    Returns (host, port) tuple or None if mirror is not enabled.
+    """
+    status = _read_runtime_status()
+    if not status.get("mirrorEnabled", False):
+        return None
+    host = status.get("address", "127.0.0.1")
+    if host == "0.0.0.0":
+        host = "127.0.0.1"
+    port = status.get("port")
+    if port is None:
+        return None
+    return (host, int(port))
+
+
+@mcp.tool()
+def bbcom_connect(port_name: str, baud_rate: int = 115200) -> str:
+    """Connect to a serial port through BBCom. This sends a control command
+    via the Mirror TCP connection to tell the running BBCom instance to
+    open the specified serial port.
+
+    IMPORTANT: BBCom must be running with Mirror mode enabled for this
+    to work. Use bbcom_status first to check.
+
+    Args:
+        port_name: Serial port name (e.g. 'COM3', '/dev/ttyUSB0')
+        baud_rate: Baud rate (default: 115200)
+    """
+    conn = _get_mirror_connection()
+    if conn is None:
+        return json.dumps({
+            "type": "error",
+            "message": "Mirror mode not enabled. Enable mirror mode in BBCom first.",
+        }, indent=2)
+
+    host, port = conn
+    command = f"CONNECT:{port_name},{baud_rate}"
+    result = _mirror_tcp_control(host, port, command)
+
+    # Wait and verify connection status
+    time.sleep(0.5)
+    status = _read_runtime_status()
+    connected = status.get("serialConnected", False)
+    connected_port = status.get("serialPort")
+
+    if connected and connected_port == port_name:
+        result["verified"] = True
+        result["message"] = f"Successfully connected to {port_name} at {baud_rate} baud"
+    else:
+        result["verified"] = False
+        result["message"] = (
+            f"Connect command sent, but verification shows "
+            f"serialConnected={connected}, serialPort={connected_port}"
+        )
+
+    return json.dumps(result, indent=2)
+
+
+@mcp.tool()
+def bbcom_disconnect() -> str:
+    """Disconnect from the current serial port through BBCom. This sends a
+    control command via the Mirror TCP connection to tell the running BBCom
+    instance to close the serial port.
+
+    IMPORTANT: BBCom must be running with Mirror mode enabled for this
+    to work. Use bbcom_status first to check.
+    """
+    conn = _get_mirror_connection()
+    if conn is None:
+        return json.dumps({
+            "type": "error",
+            "message": "Mirror mode not enabled. Enable mirror mode in BBCom first.",
+        }, indent=2)
+
+    host, port = conn
+    command = "DISCONNECT"
+    result = _mirror_tcp_control(host, port, command)
+
+    # Wait and verify disconnection
+    time.sleep(0.5)
+    status = _read_runtime_status()
+    connected = status.get("serialConnected", False)
+
+    if not connected:
+        result["verified"] = True
+        result["message"] = "Successfully disconnected from serial port"
+    else:
+        result["verified"] = False
+        result["message"] = f"Disconnect command sent, but serialConnected={connected}"
+
+    return json.dumps(result, indent=2)
+
+
+@mcp.tool()
+def bbcom_set_signals(rts: bool | None = None, dtr: bool | None = None) -> str:
+    """Set serial port control signals (RTS/DTR). This allows toggling the
+    RTS (Request To Send) and DTR (Data Terminal Ready) control lines at
+    runtime. Essential for entering ESP32 download mode, which requires
+    specific RTS/DTR timing sequences.
+
+    IMPORTANT: BBCom must be connected to a serial port AND have Mirror mode
+    enabled. Use bbcom_status first to check.
+
+    Common ESP32 download mode sequences:
+    1. Set RTS=1, DTR=0 (EN low, IO0 low -> reset into download)
+    2. Set RTS=0, DTR=1 (EN high, IO0 still low -> run in download mode)
+    3. Set RTS=0, DTR=0 (normal operation)
+
+    Args:
+        rts: Set RTS signal level (True=high, False=low, None=no change)
+        dtr: Set DTR signal level (True=high, False=low, None=no change)
+    """
+    if rts is None and dtr is None:
+        return json.dumps({
+            "type": "error",
+            "message": "At least one of rts or dtr must be specified",
+        }, indent=2)
+
+    conn = _get_mirror_connection()
+    if conn is None:
+        return json.dumps({
+            "type": "error",
+            "message": "Mirror mode not enabled. Enable mirror mode in BBCom first.",
+        }, indent=2)
+
+    host, port = conn
+
+    # Build SIGNALS command
+    parts = []
+    if rts is not None:
+        parts.append(f"RTS={1 if rts else 0}")
+    if dtr is not None:
+        parts.append(f"DTR={1 if dtr else 0}")
+    command = f"SIGNALS:{','.join(parts)}"
+
+    result = _mirror_tcp_control(host, port, command)
+    return json.dumps(result, indent=2)
+
+
+@mcp.tool()
+def bbcom_set_serial_config(
+    baud_rate: int | None = None,
+    data_bits: str | None = None,
+    parity: str | None = None,
+    stop_bits: str | None = None,
+    flow_control: str | None = None,
+) -> str:
+    """Set serial port configuration parameters. Changes take effect on next
+    connection. Use bbcom_connect to reconnect with new settings.
+
+    IMPORTANT: BBCom must be running with Mirror mode enabled for this
+    to work. Use bbcom_status first to check.
+
+    Args:
+        baud_rate: Baud rate (e.g. 9600, 115200, 921600)
+        data_bits: Data bits: '5', '6', '7', or '8'
+        parity: Parity: 'none', 'odd', or 'even'
+        stop_bits: Stop bits: '1' or '2'
+        flow_control: Flow control: 'none', 'software', or 'hardware'
+    """
+    if all(v is None for v in [baud_rate, data_bits, parity, stop_bits, flow_control]):
+        return json.dumps({
+            "type": "error",
+            "message": "At least one configuration parameter must be specified",
+        }, indent=2)
+
+    conn = _get_mirror_connection()
+    if conn is None:
+        return json.dumps({
+            "type": "error",
+            "message": "Mirror mode not enabled. Enable mirror mode in BBCom first.",
+        }, indent=2)
+
+    host, port = conn
+
+    # Build CONFIG command
+    parts = []
+    if baud_rate is not None:
+        parts.append(f"baud={baud_rate}")
+    if data_bits is not None:
+        if data_bits not in ("5", "6", "7", "8"):
+            return json.dumps({
+                "type": "error",
+                "message": f"Invalid data_bits '{data_bits}'. Must be 5, 6, 7, or 8",
+            }, indent=2)
+        parts.append(f"data={data_bits}")
+    if parity is not None:
+        if parity not in ("none", "odd", "even"):
+            return json.dumps({
+                "type": "error",
+                "message": f"Invalid parity '{parity}'. Must be none, odd, or even",
+            }, indent=2)
+        parts.append(f"parity={parity}")
+    if stop_bits is not None:
+        if stop_bits not in ("1", "2"):
+            return json.dumps({
+                "type": "error",
+                "message": f"Invalid stop_bits '{stop_bits}'. Must be 1 or 2",
+            }, indent=2)
+        parts.append(f"stop={stop_bits}")
+    if flow_control is not None:
+        if flow_control not in ("none", "software", "hardware"):
+            return json.dumps({
+                "type": "error",
+                "message": f"Invalid flow_control '{flow_control}'. Must be none, software, or hardware",
+            }, indent=2)
+        parts.append(f"flow={flow_control}")
+
+    command = f"CONFIG:{','.join(parts)}"
+    result = _mirror_tcp_control(host, port, command)
+    return json.dumps(result, indent=2)
+
+
 def main():
     """Entry point for the MCP server (used by pyproject.toml script)."""
     parser = argparse.ArgumentParser(

@@ -1,6 +1,6 @@
 [project]
 name = "bbcom-mcp"
-version = "1.0.0"
+version = "1.1.0"
 description = "MCP Server for BBCom serial communication tool - enables LLMs to access serial data via mirror mode"
 readme = "README.md"
 requires-python = ">=3.10"
