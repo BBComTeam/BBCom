@@ -168,19 +168,27 @@ def _run_cli_command(*args: str) -> dict:
             capture_output=True,
             text=True,
             timeout=30,
+            encoding="utf-8",
+            errors="replace",
         )
         if result.returncode != 0:
-            return {"type": "error", "message": f"Command failed: {result.stderr.strip()}"}
+            return {"type": "error", "message": f"Command failed: {(result.stderr or '').strip()}"}
 
         # Parse JSON from stdout
-        output = result.stdout.strip()
+        output = (result.stdout or '').strip()
         if not output:
-            # Try reading from cli_output.json as fallback
+            # Try reading from cli_output.json as fallback. Guard against stale
+            # results from a PREVIOUS command: only accept files written within
+            # the last 10 seconds.
             local_app_data = os.environ.get("LOCALAPPDATA", "")
             if local_app_data:
                 output_file = Path(local_app_data) / "bbcom" / "cli_output.json"
                 if output_file.exists():
-                    output = output_file.read_text().strip()
+                    try:
+                        if time.time() - output_file.stat().st_mtime < 10:
+                            output = output_file.read_text().strip()
+                    except OSError:
+                        pass
 
         if output:
             return json.loads(output)
@@ -194,41 +202,94 @@ def _run_cli_command(*args: str) -> dict:
         return {"type": "error", "message": f"Command error: {e}"}
 
 
-def _read_runtime_status() -> dict:
-    """Read BBCom runtime status file directly."""
+def _empty_runtime_status() -> dict:
+    """Default status used when BBCom is not running / status unavailable."""
+    return {
+        "mirrorEnabled": False,
+        "address": None,
+        "port": None,
+        "serialConnected": False,
+        "terminalConnected": False,
+        "clientCount": 0,
+        "stale": False,
+    }
+
+
+def _process_alive(pid: int) -> bool:
+    """Check whether a process id is alive (Windows, no external deps)."""
+    if pid <= 0:
+        return False
+    try:
+        import ctypes
+
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        STILL_ACTIVE = 259
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            return False
+        try:
+            exit_code = ctypes.c_ulong()
+            if kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                return exit_code.value == STILL_ACTIVE
+            return True
+        finally:
+            kernel32.CloseHandle(handle)
+    except Exception:
+        # If liveness cannot be determined, assume alive (avoid false negatives).
+        return True
+
+
+def _read_runtime_status(max_age_seconds: float = 0.0) -> dict:
+    """Read BBCom runtime status file directly.
+
+    Detects stale status files (BBCom crashed / exited uncleanly):
+    - the file carries the writer's ``pid`` → checked for process liveness;
+    - ``max_age_seconds`` > 0 additionally rejects files whose mtime is older
+      than the given age (heartbeat mode).
+    Stale statuses get ``mirrorEnabled=False`` and ``stale=True`` so callers
+    report "BBCom not running" instead of trying to connect to a dead mirror.
+    """
     local_app_data = os.environ.get("LOCALAPPDATA", "")
     if not local_app_data:
-        return {
-            "mirrorEnabled": False,
-            "address": None,
-            "port": None,
-            "serialConnected": False,
-            "terminalConnected": False,
-            "clientCount": 0,
-        }
+        return _empty_runtime_status()
 
     status_file = Path(local_app_data) / "bbcom" / "runtime_status.json"
     if not status_file.exists():
-        return {
-            "mirrorEnabled": False,
-            "address": None,
-            "port": None,
-            "serialConnected": False,
-            "terminalConnected": False,
-            "clientCount": 0,
-        }
+        return _empty_runtime_status()
 
     try:
-        return json.loads(status_file.read_text())
+        status = json.loads(status_file.read_text())
     except Exception:
-        return {
-            "mirrorEnabled": False,
-            "address": None,
-            "port": None,
-            "serialConnected": False,
-            "terminalConnected": False,
-            "clientCount": 0,
-        }
+        return _empty_runtime_status()
+
+    if not isinstance(status, dict):
+        return _empty_runtime_status()
+
+    # Staleness detection
+    stale = False
+    stale_reason = None
+    if max_age_seconds > 0:
+        try:
+            age = time.time() - status_file.stat().st_mtime
+            if age > max_age_seconds:
+                stale = True
+                stale_reason = f"status file age {age:.0f}s > {max_age_seconds:.0f}s"
+        except OSError:
+            pass
+    pid = status.get("pid")
+    if not stale and isinstance(pid, int) and pid > 0:
+        if not _process_alive(pid):
+            stale = True
+            stale_reason = f"writer process {pid} is not running"
+
+    if stale:
+        result = _empty_runtime_status()
+        result["stale"] = True
+        result["staleReason"] = stale_reason
+        return result
+    return status
+
 
 
 def _mirror_tcp_read(host: str, port: int, duration_ms: int = 5000, raw: bool = False) -> dict:
@@ -1315,7 +1376,7 @@ def bbcom_set_display_mode(mode: str) -> str:
     return json.dumps(result, indent=2)
 
 
-def _mirror_tcp_control(host: str, port: int, command: str) -> dict:
+def _mirror_tcp_control(host: str, port: int, command: str, wait_seconds: float = 0.3) -> dict:
     """Send a control command through Mirror TCP control channel.
 
     Control commands use the \\x01 prefix to distinguish them from normal
@@ -1323,7 +1384,8 @@ def _mirror_tcp_control(host: str, port: int, command: str) -> dict:
 
     Supported commands:
     - PING - Health check
-    - SIGNALS:RTS=1,DTR=0 - Set RTS/DTR control signals
+    - SIGNALS:RTS=1,DTR=0 - Set RTS/DTR control signals (processed in Rust for precise timing)
+    - BOOTLOAD - Enter ESP32 download mode (atomic RTS/DTR sequence with precise timing)
     - CONNECT:COM3,115200 - Connect serial port with baud rate
     - DISCONNECT - Disconnect serial port
     - CONFIG:baud=115200,data=8,parity=none,stop=1,flow=none - Set serial config
@@ -1336,8 +1398,8 @@ def _mirror_tcp_control(host: str, port: int, command: str) -> dict:
         control_data = f"\x01{command}\n".encode("utf-8")
         sock.sendall(control_data)
 
-        # Wait briefly for command to be processed
-        time.sleep(0.3)
+        # Wait for command to be processed
+        time.sleep(wait_seconds)
 
         # Try to read any response (best effort)
         sock.settimeout(0.5)
@@ -1493,6 +1555,10 @@ def bbcom_set_signals(rts: bool | None = None, dtr: bool | None = None) -> str:
     on the currently connected serial port. This is essential for entering
     ESP32 download mode, which requires precise RTS/DTR timing.
 
+    NOTE: For entering ESP32 download mode, prefer bbcom_enter_bootloader which
+    executes the entire RTS/DTR sequence atomically with precise timing on the
+    BBCom server side.
+
     ESP32 Download Mode Sequence:
     1. Set RTS=1, DTR=0 (asserts RESET via RTS, releases GPIO0 via DTR)
     2. Set RTS=0, DTR=1 (releases RESET, asserts GPIO0 via DTR → boot mode)
@@ -1556,6 +1622,192 @@ def bbcom_set_signals(rts: bool | None = None, dtr: bool | None = None) -> str:
         },
         indent=2,
     )
+
+
+@mcp.tool()
+def bbcom_enter_bootloader(
+    read_duration_ms: int = 3000,
+    raw: bool = False,
+) -> str:
+    """Enter ESP32 download mode and capture bootloader output atomically.
+
+    Starts a reader connection FIRST, then sends the BOOTLOAD command, ensuring
+    no bootloader output is missed. This is the preferred way to enter ESP32
+    bootloader mode because:
+    1. The entire RTS/DTR signal sequence is handled atomically in the BBCom
+       Rust backend with precise timing (impossible via separate SIGNALS calls)
+    2. The reader is connected before the reset, so all bootloader output is
+       captured (impossible via separate enter_bootloader + mirror_read calls)
+
+    The sequence executed on the server:
+    1. RTS=1, DTR=0  (assert RESET via RTS, release GPIO0)
+    2. Wait 100ms
+    3. RTS=0, DTR=1  (release RESET, assert GPIO0 → boot mode)
+    4. Wait 50ms
+    5. RTS=0, DTR=0  (release both, chip runs in download mode)
+
+    Prerequisites: BBCom must be running with Mirror mode enabled and a
+    serial port must be currently connected at 115200 baud.
+
+    Args:
+        read_duration_ms: How long to read bootloader output in milliseconds
+                          (default: 3000). ESP32 bootloader output arrives
+                          within ~500ms of reset.
+        raw: If True, read raw serial bytes without formatting (default: False).
+             Returns hex string of raw bytes for binary protocol analysis.
+    """
+    conn = _get_mirror_connection()
+    if not conn:
+        return json.dumps(
+            {
+                "type": "error",
+                "message": "Mirror mode not enabled. Enable mirror mode in BBCom first.",
+            },
+            indent=2,
+        )
+
+    host, port = conn
+
+    # Check if serial is connected
+    status = _read_runtime_status()
+    if not status.get("serialConnected"):
+        return json.dumps(
+            {
+                "type": "error",
+                "message": "No serial port connected. Connect a port first using bbcom_connect.",
+            },
+            indent=2,
+        )
+
+    # Pattern: start reader FIRST, then send BOOTLOAD, then collect response
+    # This ensures we don't miss the bootloader output that arrives immediately
+    # after the RTS/DTR sequence resets the chip.
+    if raw:
+        # Raw mode: single connection approach
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(5.0)
+            sock.connect((host, port))
+
+            # Switch to raw mode
+            sock.sendall(b"\x01RAW\n")
+            time.sleep(0.1)
+
+            # Send BOOTLOAD command (processed atomically in Rust backend)
+            sock.sendall(b"\x01BOOTLOAD\n")
+
+            # Read raw bootloader output
+            chunks = []
+            total_bytes = 0
+            start = time.time()
+
+            while (time.time() - start) * 1000 < read_duration_ms:
+                try:
+                    recv_data = sock.recv(4096)
+                    if not recv_data:
+                        break
+                    total_bytes += len(recv_data)
+                    chunks.append(recv_data)
+                except socket.timeout:
+                    continue
+                except Exception:
+                    break
+
+            # Switch back to formatted mode
+            try:
+                sock.sendall(b"\x01FORMATTED\n")
+            except Exception:
+                pass
+            sock.close()
+
+            raw_response = b"".join(chunks)
+            return json.dumps(
+                {
+                    "type": "bootloader_entered_raw",
+                    "message": "ESP32 download mode sequence executed.",
+                    "output": {
+                        "data": raw_response.hex(),
+                        "bytes": total_bytes,
+                    },
+                },
+                indent=2,
+            )
+        except Exception as e:
+            return json.dumps(
+                {"type": "error", "message": f"Bootloader entry failed: {e}"}, indent=2
+            )
+    else:
+        # Formatted mode: separate reader and sender threads
+        reader_lines = []
+        reader_bytes = 0
+        reader_error = None
+        reader_ready = threading.Event()
+
+        def _reader():
+            nonlocal reader_lines, reader_bytes, reader_error
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(5.0)
+                sock.connect((host, port))
+                sock.settimeout(0.5)
+                reader_ready.set()
+
+                start = time.time()
+                while (time.time() - start) * 1000 < read_duration_ms:
+                    try:
+                        recv_data = sock.recv(4096)
+                        if not recv_data:
+                            break
+                        reader_bytes += len(recv_data)
+                        text = recv_data.decode("utf-8", errors="replace")
+                        for line in text.split("\n"):
+                            line = line.strip()
+                            if line:
+                                reader_lines.append(line)
+                    except socket.timeout:
+                        continue
+                    except Exception:
+                        break
+
+                sock.close()
+            except Exception as e:
+                reader_error = str(e)
+                reader_ready.set()
+
+        reader_thread = threading.Thread(target=_reader, daemon=True)
+        reader_thread.start()
+
+        if not reader_ready.wait(timeout=5.0):
+            return json.dumps(
+                {"type": "error", "message": "Reader connection timed out"}, indent=2
+            )
+
+        if reader_error:
+            return json.dumps(
+                {"type": "error", "message": f"Reader connection failed: {reader_error}"}, indent=2
+            )
+
+        # Now send BOOTLOAD command via control channel
+        result = _mirror_tcp_control(host, port, "BOOTLOAD", wait_seconds=0.2)
+
+        if result.get("type") == "error":
+            reader_thread.join(timeout=read_duration_ms / 1000 + 1)
+            return json.dumps(result, indent=2)
+
+        # Wait for reader to finish collecting bootloader output
+        reader_thread.join(timeout=read_duration_ms / 1000 + 1)
+
+        return json.dumps(
+            {
+                "type": "bootloader_entered",
+                "message": "ESP32 download mode sequence executed.",
+                "output": {
+                    "lines": reader_lines,
+                    "bytes": reader_bytes,
+                },
+            },
+            indent=2,
+        )
 
 
 @mcp.tool()
@@ -1631,6 +1883,304 @@ def bbcom_set_serial_config(
         },
         indent=2,
     )
+
+
+# ---------------------------------------------------------------------------
+# JSON RPC over the mirror control channel (BBCom >= 1.8.7)
+# ---------------------------------------------------------------------------
+
+def _mirror_rpc(command: str, args: dict | None = None, timeout_s: float = 15.0) -> dict:
+    """Send a JSON RPC request over the mirror control channel and wait for the
+    matching response.
+
+    Request:  \\x01RPC {"id":"...","cmd":"...","args":{...}}
+    Response: \\x01RPCRESP {"id":"...","ok":true,"result":...}   (or ok=false+error)
+
+    Unlike _mirror_tcp_control, this waits for an explicit response with a
+    matching id, so success/failure is known instead of assumed. Only
+    allowlisted commands are accepted by the BBCom backend (see
+    src-tauri/src/mirror_rpc.rs).
+    """
+    conn = _get_mirror_connection()
+    if not conn:
+        return {
+            "type": "error",
+            "message": "Mirror mode not enabled. Enable mirror mode in BBCom first.",
+        }
+    host, port = conn
+
+    rpc_id = f"{time.time_ns()}"
+    payload = json.dumps({"id": rpc_id, "cmd": command, "args": args or {}})
+    prefix = b"\x01RPCRESP "
+    try:
+        with socket.create_connection((host, port), timeout=5) as sock:
+            sock.sendall(f"\x01RPC {payload}\n".encode("utf-8"))
+            sock.settimeout(1.0)
+            deadline = time.time() + timeout_s
+            buf = b""
+            while time.time() < deadline:
+                try:
+                    chunk = sock.recv(65536)
+                except socket.timeout:
+                    continue
+                if not chunk:
+                    break
+                buf += chunk
+                while True:
+                    nl = buf.find(b"\n")
+                    if nl < 0:
+                        break
+                    line = buf[:nl]
+                    buf = buf[nl + 1:]
+                    if not line.startswith(prefix):
+                        continue  # broadcast/log line — ignore
+                    try:
+                        resp = json.loads(line[len(prefix):].decode("utf-8"))
+                    except Exception:
+                        continue
+                    if resp.get("id") == rpc_id:
+                        return {"type": "rpc", "rpc": resp}
+            return {
+                "type": "error",
+                "message": (
+                    f"RPC timeout ({timeout_s:.0f}s) waiting for response to "
+                    f"'{command}'. Is BBCom >= 1.8.7 running with mirror enabled?"
+                ),
+            }
+    except Exception as e:
+        return {"type": "error", "message": f"Mirror RPC failed: {e}"}
+
+
+def _rpc_result_to_json(result: dict, indent: int = 2) -> str:
+    """Format an _mirror_rpc() result: unwrap ok/result, or pass through the error."""
+    if result.get("type") == "error":
+        return json.dumps(result, indent=indent)
+    rpc = result.get("rpc", {})
+    if rpc.get("ok"):
+        return json.dumps({"type": "rpc_result", "result": rpc.get("result")}, indent=indent)
+    return json.dumps(
+        {"type": "error", "message": rpc.get("error", "RPC failed")}, indent=indent
+    )
+
+
+@mcp.tool()
+def bbcom_rpc(command: str, args_json: str = "{}") -> str:
+    """Generic JSON RPC over the BBCom mirror control channel (BBCom >= 1.8.7).
+
+    Calls an allowlisted BBCom backend command synchronously and returns its
+    result. Allowlist (see also the dedicated tools which wrap most of these):
+    - ping, get_connection_status, get_ports
+    - traffic_get, traffic_deltas
+    - bblog_get_status, bblog_get_stats, bblog_get_sync_status
+    - lclog_dump_start, lclog_dump_get_state, lclog_dump_cancel, lclog_dump_take_result
+
+    Args:
+        command: Command name (see allowlist above)
+        args_json: JSON object with arguments (most commands take none)
+
+    Returns:
+        JSON {"type":"rpc_result","result":...} on success, or
+        {"type":"error","message":...} on failure.
+    """
+    try:
+        args = json.loads(args_json) if args_json and args_json.strip() else {}
+    except json.JSONDecodeError as e:
+        return json.dumps({"type": "error", "message": f"Invalid args_json: {e}"}, indent=2)
+    if not isinstance(args, dict):
+        return json.dumps({"type": "error", "message": "args_json must be a JSON object"}, indent=2)
+    return _rpc_result_to_json(_mirror_rpc(command, args))
+
+
+@mcp.tool()
+def bbcom_bblog_status() -> str:
+    """Get BBLog decoder status: enabled, sync state, build id and counters.
+
+    Requires BBCom >= 1.8.7 running with mirror enabled. Use this to check
+    whether the device logs are currently decodable (synced) before decoding
+    or dumping device logs.
+    """
+    status = _mirror_rpc("bblog_get_status", {})
+    stats = _mirror_rpc("bblog_get_stats", {})
+    if status.get("type") == "error":
+        return json.dumps(status, indent=2)
+    rpc_status = status.get("rpc", {})
+    counters = {}
+    if stats.get("type") == "rpc" and stats.get("rpc", {}).get("ok"):
+        counters = stats["rpc"].get("result", {}).get("counters", {})
+    return json.dumps(
+        {
+            "type": "rpc_result",
+            "status": rpc_status.get("result") if rpc_status.get("ok") else None,
+            "error": rpc_status.get("error") if not rpc_status.get("ok") else None,
+            "counters": counters,
+        },
+        indent=2,
+    )
+
+
+@mcp.tool()
+def bbcom_traffic() -> str:
+    """Get serial traffic counters: cumulative RX/TX bytes and per-second deltas.
+
+    Requires BBCom >= 1.8.7 running with mirror enabled. Useful to check
+    whether the device is actually sending data and at what rate.
+    """
+    snap = _mirror_rpc("traffic_get", {})
+    deltas = _mirror_rpc("traffic_deltas", {})
+    if snap.get("type") == "error":
+        return json.dumps(snap, indent=2)
+    result: dict = {}
+    if snap.get("rpc", {}).get("ok"):
+        result["totals"] = snap["rpc"].get("result")
+    else:
+        result["error"] = snap.get("rpc", {}).get("error", "traffic_get failed")
+    if deltas.get("rpc", {}).get("ok"):
+        result["deltas_per_second"] = deltas["rpc"].get("result")
+    return json.dumps({"type": "rpc_result", **result}, indent=2)
+
+
+@mcp.tool()
+def bbcom_bblog_dump_start(
+    save_raw: bool = False,
+    wait: bool = True,
+    timeout_s: int = 300,
+    output_path: str = "",
+) -> str:
+    """Dump the device's LCLog/BBL2 ring and decode it to a .txt file.
+
+    One-stop tool: starts the dump on the device, optionally waits for it to
+    finish (polling progress), then writes the decoded log text to a file and
+    returns the file path so it can be read and analyzed.
+
+    Prerequisites (all checked by BBCom):
+    - BBCom >= 1.8.7 running with mirror enabled
+    - Serial port connected
+    - BBLog decoding enabled (Enable BBLog Decoding) and a token table loaded
+    - Device firmware built with lclog storage (CONFIG_LCLOG_BACKEND_STORAGE)
+
+    Args:
+        save_raw: Also return the raw BBL2 image as a .bin file (default False)
+        wait: Wait for completion and write the output file (default True).
+              If False, only starts the dump; poll with bbcom_bblog_dump_status
+              and fetch with bbcom_bblog_dump_take_result.
+        timeout_s: Max seconds to wait when wait=True (default 300)
+        output_path: Where to write the .txt (default:
+                     %LOCALAPPDATA%/bbcom/dumps/<suggested filename>)
+
+    Returns:
+        JSON with the dump result file path(s) and statistics, or progress
+        info when wait=False.
+    """
+    started = _mirror_rpc("lclog_dump_start", {"save_raw": save_raw}, timeout_s=10)
+    if started.get("type") == "error":
+        return json.dumps(started, indent=2)
+    rpc = started.get("rpc", {})
+    if not rpc.get("ok"):
+        return json.dumps(
+            {"type": "error", "message": rpc.get("error", "lclog_dump_start failed")}, indent=2
+        )
+
+    if not wait:
+        return json.dumps(
+            {"type": "rpc_result", "started": True, "message": "Dump started. Poll with bbcom_bblog_dump_status."},
+            indent=2,
+        )
+
+    # Poll until done / failed / cancelled
+    deadline = time.time() + max(30, timeout_s)
+    last_progress = {}
+    while time.time() < deadline:
+        time.sleep(2)
+        state = _mirror_rpc("lclog_dump_get_state", {}, timeout_s=10)
+        if state.get("type") == "error":
+            return json.dumps(state, indent=2)
+        st = state.get("rpc", {}).get("result", {})
+        last_progress = st
+        phase = st.get("phase", "")
+        if phase in ("done", "failed", "cancelled"):
+            break
+        # Emit compact progress info for the caller log
+        last_progress = st
+
+    if last_progress.get("phase") not in ("done",):
+        return json.dumps(
+            {"type": "error", "phase": last_progress.get("phase", "unknown"),
+             "progress": last_progress,
+             "message": last_progress.get("error") or f"Dump did not complete within {timeout_s}s"},
+            indent=2,
+        )
+
+    return _bblog_dump_write_output(output_path)
+
+
+def _bblog_dump_write_output(output_path: str) -> str:
+    """Fetch the completed dump result via RPC and write it to file(s)."""
+    taken = _mirror_rpc("lclog_dump_take_result", {}, timeout_s=60)
+    if taken.get("type") == "error":
+        return json.dumps(taken, indent=2)
+    rpc = taken.get("rpc", {})
+    if not rpc.get("ok"):
+        return json.dumps(
+            {"type": "error", "message": rpc.get("error", "lclog_dump_take_result failed")}, indent=2
+        )
+    result = rpc.get("result", {})
+    text = result.get("text", "")
+    raw_hex = result.get("raw_hex")
+    stats = result.get("stats")
+    suggested = result.get("suggested_filename") or "lclog_dump.txt"
+
+    if output_path:
+        out_file = Path(output_path)
+    else:
+        base_dir = Path(os.environ.get("LOCALAPPDATA", "")) / "bbcom" / "dumps"
+        base_dir.mkdir(parents=True, exist_ok=True)
+        out_file = base_dir / suggested
+
+    out_file.parent.mkdir(parents=True, exist_ok=True)
+    out_file.write_text(text, encoding="utf-8")
+
+    written: dict = {"text_file": str(out_file), "records_stats": stats}
+    if raw_hex:
+        bin_path = (
+            out_file.with_suffix(".bin")
+            if out_file.suffix.lower() == ".txt"
+            else out_file.parent / (out_file.name + ".bin")
+        )
+        bin_path.write_bytes(bytes.fromhex(raw_hex))
+        written["raw_bin_file"] = str(bin_path)
+
+    return json.dumps({"type": "rpc_result", **written}, indent=2)
+
+
+@mcp.tool()
+def bbcom_bblog_dump_status() -> str:
+    """Get the current LCLog dump session state (phase, progress, counters).
+
+    Requires BBCom >= 1.8.7. Use after bbcom_bblog_dump_start(wait=False) to
+    poll progress: phase is one of idle/summary/dumping/decoding/done/failed/
+    cancelled; idx/blocks give the current block progress.
+    """
+    return _rpc_result_to_json(_mirror_rpc("lclog_dump_get_state", {}, timeout_s=10))
+
+
+@mcp.tool()
+def bbcom_bblog_dump_cancel() -> str:
+    """Cancel a running LCLog dump session (BBCom >= 1.8.7)."""
+    return _rpc_result_to_json(_mirror_rpc("lclog_dump_cancel", {}, timeout_s=10))
+
+
+@mcp.tool()
+def bbcom_bblog_dump_take_result(output_path: str = "") -> str:
+    """Fetch the decoded result of a completed LCLog dump and write it to a file.
+
+    Requires BBCom >= 1.8.7 and a finished dump session (phase 'done', see
+    bbcom_bblog_dump_status). The result is cleared from BBCom by this call.
+
+    Args:
+        output_path: Where to write the .txt (default:
+                     %LOCALAPPDATA%/bbcom/dumps/<suggested filename>)
+    """
+    return _bblog_dump_write_output(output_path)
 
 
 def main():

@@ -11,6 +11,10 @@ MCP (Model Context Protocol) server for [BBCom](https://github.com/BBComTeam/BBC
 - **Pattern Matching**: Wait for specific patterns (HARDFAULT, FATAL ERROR, boot complete, etc.)
 - **Multi-Pattern Monitoring**: Watch for multiple error/event patterns simultaneously
 - **Control Serial**: List ports, get/set configuration (baud rate, display mode, etc.)
+- **Bootloader**: Enter ESP32 download mode with atomic RTS/DTR sequencing
+- **JSON RPC**: Synchronously call allowlisted BBCom backend commands (BBCom >= 1.8.7)
+- **BBLog / LCLog**: Query decoder status and dump the device log ring to a decoded .txt file
+- **Traffic**: Read serial RX/TX byte counters and per-second rates
 
 ## Prerequisites
 
@@ -127,6 +131,7 @@ Once the MCP server is configured, the LLM can:
 | `bbcom_get_config` | Get BBCom configuration |
 | `bbcom_set_baud_rate` | Set serial baud rate |
 | `bbcom_set_display_mode` | Set display mode (ascii/hex) |
+| `bbcom_set_serial_config` | Set serial config (baud/data/parity/stop/flow) |
 
 ### Mirror Data Operations
 
@@ -138,6 +143,27 @@ Once the MCP server is configured, the LLM can:
 | `bbcom_mirror_read_until` | Read until pattern matched (e.g. HARDFAULT) |
 | `bbcom_mirror_send_and_read_until` | Send command, read until pattern in response |
 | `bbcom_mirror_monitor` | Monitor for multiple patterns, return only matches |
+
+### Serial Control
+
+| Tool | Description | Requires |
+|------|-------------|----------|
+| `bbcom_connect` | Connect a serial port via the control channel | Mirror enabled |
+| `bbcom_disconnect` | Disconnect the serial port | Mirror enabled |
+| `bbcom_set_signals` | Set RTS/DTR control signals | Serial connected |
+| `bbcom_enter_bootloader` | Enter ESP32 download mode (atomic RTS/DTR + capture output) | Serial connected |
+
+### JSON RPC & Device Introspection (BBCom >= 1.8.7)
+
+| Tool | Description |
+|------|-------------|
+| `bbcom_rpc` | Generic JSON RPC over the control channel (allowlisted commands) |
+| `bbcom_bblog_status` | BBLog decoder status: enabled, sync state, build id, counters |
+| `bbcom_traffic` | Serial RX/TX byte totals and per-second rates |
+| `bbcom_bblog_dump_start` | Dump the device's LCLog ring and decode to .txt (one-stop) |
+| `bbcom_bblog_dump_status` | Poll dump session progress (phase, block x/y, counters) |
+| `bbcom_bblog_dump_cancel` | Cancel a running dump session |
+| `bbcom_bblog_dump_take_result` | Fetch the decoded dump result and write it to a file |
 
 ## Architecture
 
@@ -164,10 +190,11 @@ Once the MCP server is configured, the LLM can:
                   └──────────────────┘
 ```
 
-The MCP server communicates with BBCom through three channels:
+The MCP server communicates with BBCom through four channels:
 1. **TCP connection**: Real-time data read/write via mirror mode
-2. **CLI commands**: Status queries and configuration (`bbcom.exe --test`)
-3. **Status file**: Fast status queries (`%LOCALAPPDATA%\bbcom\runtime_status.json`)
+2. **Control channel JSON RPC**: Synchronous allowlisted backend calls (`\x01RPC` → `\x01RPCRESP`, BBCom >= 1.8.7)
+3. **CLI commands**: Status queries and configuration (`bbcom.exe --test`)
+4. **Status file**: Fast status queries (`%LOCALAPPDATA%\bbcom\runtime_status.json`, carries the writer's `pid` for staleness detection)
 
 ## License
 
