@@ -29,6 +29,7 @@ dev = [
 
 [project.scripts]
 bbcom-mcp = "bbcom_mcp_server:main"
+bbcom-rpc = "bbcom_cli:main"
 
 [build-system]
 requires = ["hatchling"]

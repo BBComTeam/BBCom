@@ -4,6 +4,12 @@ MCP (Model Context Protocol) server for [BBCom](https://github.com/BBComTeam/BBC
 
 ## Features
 
+The matching 2026-10-26 BBCom build adds live protocol, Notes, waveform, Timer,
+Traffic, ADB, Com Proxy, RTT, terminal and command-panel automation. See
+[feature tools and CLI guide](FEATURES.md). Restart MCP after updating, then
+call `bbcom_capabilities` to discover the running application's support.
+The new `bbcom-rpc` / `bbcom_cli.py` CLI shares the same live runtime as MCP.
+
 - **Query Status**: Check if BBCom is running, mirror mode status, serial connection info
 - **Read Serial Data**: Connect to mirror TCP port and read real-time serial data
 - **Send Commands**: Send data to serial devices through the mirror TCP port

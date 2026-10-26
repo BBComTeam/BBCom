@@ -1911,14 +1911,17 @@ def _mirror_rpc(command: str, args: dict | None = None, timeout_s: float = 15.0)
 
     rpc_id = f"{time.time_ns()}"
     payload = json.dumps({"id": rpc_id, "cmd": command, "args": args or {}})
+    wire = f"\x01RPC {payload}\n".encode("utf-8")
+    if len(wire) > 131072:
+        return {"type": "error", "message": "RPC request exceeds 128 KiB"}
     prefix = b"\x01RPCRESP "
+    deadline = time.monotonic() + timeout_s
     try:
-        with socket.create_connection((host, port), timeout=5) as sock:
-            sock.sendall(f"\x01RPC {payload}\n".encode("utf-8"))
-            sock.settimeout(1.0)
-            deadline = time.time() + timeout_s
+        with socket.create_connection((host, port), timeout=max(.01, min(5, timeout_s))) as sock:
+            sock.sendall(wire)
             buf = b""
-            while time.time() < deadline:
+            while time.monotonic() < deadline:
+                sock.settimeout(max(.01, min(1, deadline - time.monotonic())))
                 try:
                     chunk = sock.recv(65536)
                 except socket.timeout:
@@ -1926,6 +1929,8 @@ def _mirror_rpc(command: str, args: dict | None = None, timeout_s: float = 15.0)
                 if not chunk:
                     break
                 buf += chunk
+                if len(buf) > 8 * 1024 * 1024:
+                    return {"type": "error", "message": "RPC response exceeded 8 MiB; request a smaller page"}
                 while True:
                     nl = buf.find(b"\n")
                     if nl < 0:
@@ -1944,7 +1949,7 @@ def _mirror_rpc(command: str, args: dict | None = None, timeout_s: float = 15.0)
                 "type": "error",
                 "message": (
                     f"RPC timeout ({timeout_s:.0f}s) waiting for response to "
-                    f"'{command}'. Is BBCom >= 1.8.7 running with mirror enabled?"
+                    f"'{command}'. Outcome may be unknown: query status before retrying a mutation. Check that updated BBCom is running with mirror enabled."
                 ),
             }
     except Exception as e:
@@ -2181,6 +2186,10 @@ def bbcom_bblog_dump_take_result(output_path: str = "") -> str:
                      %LOCALAPPDATA%/bbcom/dumps/<suggested filename>)
     """
     return _bblog_dump_write_output(output_path)
+
+
+from bbcom_features import register as _register_feature_tools
+_register_feature_tools(mcp, _mirror_rpc, _rpc_result_to_json)
 
 
 def main():
